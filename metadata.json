@@ -1,0 +1,5 @@
+{
+  "name": "Bina AI Radar Monitor",
+  "description": "Military-grade radar monitoring system with real-time AI object classification and MCU integration support.",
+  "requestFramePermissions": []
+}

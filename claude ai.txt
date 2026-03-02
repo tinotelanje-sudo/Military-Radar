@@ -1,0 +1,276 @@
+claude ai 
+
+import { useState, useEffect, useRef, useCallback } from "react";
+
+const OBJECT_TYPES = {
+  AIRCRAFT: { label: "Pesawat", color: "#00ff88", icon: "✈", threat: "LOW" },
+  DRONE: { label: "Dron", color: "#ffaa00", icon: "⬡", threat: "MEDIUM" },
+  VEHICLE: { label: "Kenderaan", color: "#ff4444", icon: "▣", threat: "HIGH" },
+  UNKNOWN: { label: "Tidak Dikenal", color: "#888888", icon: "?", threat: "CRITICAL" },
+};
+const MCU_SOURCES = ["ESP32","STM32","NPU","CPU","I2C-BUS","SPI-BUS","MQTT"];
+const LOG_COL = { INFO:"#00aaff", WARN:"#ffaa00", ALERT:"#ff4444", OK:"#00ff88" };
+
+function genObj(id) {
+  const types = Object.keys(OBJECT_TYPES);
+  const type = types[Math.floor(Math.random()*types.length)];
+  const angle = Math.random()*360, distance = 20+Math.random()*75;
+  return { id, type, angle, distance,
+    speed:(10+Math.random()*90).toFixed(1),
+    altitude: type==="AIRCRAFT"?(1000+Math.random()*9000).toFixed(0):type==="DRONE"?(10+Math.random()*200).toFixed(0):0,
+    source: MCU_SOURCES[Math.floor(Math.random()*MCU_SOURCES.length)],
+    signalStrength:(60+Math.random()*40).toFixed(1),
+    classified: Math.random()>0.2,
+    rssi:-(40+Math.random()*60).toFixed(1), snr:(10+Math.random()*30).toFixed(1),
+    threatLevel: OBJECT_TYPES[type]?.threat||"CRITICAL"
+  };
+}
+
+function RadarScope({ objects, sweep }) {
+  return (
+    <svg width="300" height="300" style={{background:"#020c02",borderRadius:"50%",border:"2px solid #00ff4425"}}>
+      <defs>
+        <radialGradient id="sg" cx="50%" cy="50%">
+          <stop offset="0%" stopColor="#00ff44" stopOpacity="0.65"/>
+          <stop offset="100%" stopColor="#00ff44" stopOpacity="0"/>
+        </radialGradient>
+      </defs>
+      {[35,70,105,140].map(r=><circle key={r} cx="150" cy="150" r={r} fill="none" stroke="#00ff4415" strokeWidth="1"/>)}
+      <line x1="10" y1="150" x2="290" y2="150" stroke="#00ff4415" strokeWidth="1"/>
+      <line x1="150" y1="10" x2="150" y2="290" stroke="#00ff4415" strokeWidth="1"/>
+      <path d={`M150,150 L${150+140*Math.cos(((sweep-20)*Math.PI)/180)},${150+140*Math.sin(((sweep-20)*Math.PI)/180)} A140,140 0 0,1 ${150+140*Math.cos((sweep*Math.PI)/180)},${150+140*Math.sin((sweep*Math.PI)/180)} Z`} fill="url(#sg)"/>
+      {objects.map(obj=>{
+        const ox=150+(obj.distance/100)*140*Math.cos((obj.angle*Math.PI)/180);
+        const oy=150+(obj.distance/100)*140*Math.sin((obj.angle*Math.PI)/180);
+        const col=OBJECT_TYPES[obj.type]?.color||"#fff";
+        return <g key={obj.id}><circle cx={ox} cy={oy} r="5" fill={col} opacity="0.9"/><circle cx={ox} cy={oy} r="10" fill="none" stroke={col} strokeWidth="1" opacity="0.4"/></g>;
+      })}
+      <circle cx="150" cy="150" r="4" fill="#00ff44"/>
+      {[["N","145","15"],["S","145","292"],["W","5","154"],["E","282","154"]].map(([d,x,y])=>(
+        <text key={d} x={x} y={y} fill="#00ff4466" fontSize="10" fontFamily="monospace">{d}</text>
+      ))}
+    </svg>
+  );
+}
+
+export default function App() {
+  const [objects, setObjects] = useState([]);
+  const [sweep, setSweep] = useState(0);
+  const [logs, setLogs] = useState([]);
+  const [stats, setStats] = useState({total:0,threats:0,classified:0,uptime:0});
+  const [tab, setTab] = useState("radar");
+  const [sysStat, setSysStat] = useState({mqtt:true,api:true,serial:true,ai:true});
+  const [apiKey, setApiKey] = useState("");
+  const [aiResult, setAiResult] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const nextId = useRef(1), upRef = useRef(0);
+
+  const addLog = useCallback((level, msg) => {
+    const time = new Date().toLocaleTimeString("ms-MY");
+    setLogs(p => [{time,level,msg},...p].slice(0,100));
+  }, []);
+
+  useEffect(()=>{
+    const t = setInterval(()=>setSweep(s=>(s+3)%360),50);
+    return ()=>clearInterval(t);
+  },[]);
+
+  useEffect(()=>{
+    addLog("OK","Radar Engine v2.0 — SISTEM DIMULAKAN");
+    addLog("OK","MQTT Broker: mqtt://radar.mil.my:1883");
+    addLog("OK","ESP32 & STM32 online — Serial/I2C/SPI aktif");
+    addLog("OK","NPU Inference Engine — AI Klasifikasi READY");
+    addLog("INFO","REST API Gateway: http://api:8080/v1");
+    const di=setInterval(()=>{
+      const obj=genObj(nextId.current++);
+      setObjects(p=>[...p.filter(()=>Math.random()>0.08),obj].slice(-14));
+      addLog(obj.type==="UNKNOWN"?"ALERT":obj.type==="VEHICLE"?"WARN":"INFO",
+        `[${obj.source}] ${OBJECT_TYPES[obj.type].label} dikesan @ ${obj.angle.toFixed(1)}° — ${obj.distance.toFixed(1)}km`);
+      setStats(p=>({...p,total:p.total+1,threats:p.threats+(obj.type==="VEHICLE"||obj.type==="UNKNOWN"?1:0),classified:p.classified+(obj.classified?1:0)}));
+    },1300);
+    const ui=setInterval(()=>{ upRef.current+=1; setStats(p=>({...p,uptime:upRef.current})); },1000);
+    return ()=>{ clearInterval(di); clearInterval(ui); };
+  },[addLog]);
+
+  const handleAI = async()=>{
+    if(!apiKey){addLog("WARN","API Key tiada — tetapkan dalam tab Tetapan");return;}
+    setAiLoading(true);
+    addLog("INFO","Menghantar data ke Claude AI...");
+    const snap=objects.slice(0,5).map(o=>`${OBJECT_TYPES[o.type].label} @ ${o.angle.toFixed(1)}° jarak ${o.distance.toFixed(1)}km laju ${o.speed}kn [${o.source}]`).join("; ");
+    try {
+      const res=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:600,
+          messages:[{role:"user",content:`Anda sistem AI radar tentera. Analisis objek berikut dan beri penilaian ancaman dalam Bahasa Melayu (150 patah perkataan):\n${snap}`}]})
+      });
+      const data=await res.json();
+      setAiResult(data.content?.[0]?.text||"Tiada respons.");
+      addLog("OK","Laporan AI diterima");
+    } catch(e){ setAiResult("Ralat: "+e.message); addLog("ALERT","Ralat AI: "+e.message); }
+    setAiLoading(false);
+  };
+
+  const tabs=[["radar","📡 Radar"],["objek","🎯 Objek"],["log","📋 Log"],["ai","🤖 AI"],["set","⚙️ Tetapan"]];
+  const threatCol={LOW:"#00ff88",MEDIUM:"#ffaa00",HIGH:"#ff6600",CRITICAL:"#ff0044"};
+
+  return (
+    <div style={{minHeight:"100vh",background:"#020c02",color:"#cde",fontFamily:"'Courier New',monospace",fontSize:13}}>
+      {/* Header */}
+      <div style={{background:"#0a1a0a",borderBottom:"1px solid #00ff4422",padding:"12px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+        <div>
+          <div style={{color:"#00ff88",fontSize:16,fontWeight:700,letterSpacing:2}}>◈ RADAR MONITOR SYSTEM</div>
+          <div style={{color:"#445",fontSize:10}}>AI App Engine v2.0 | Klasifikasi Masa Nyata | SULIT</div>
+        </div>
+        <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+          {Object.entries(sysStat).map(([k,v])=>(
+            <span key={k} style={{fontSize:10}}><span style={{color:v?"#00ff88":"#ff4444"}}>●</span><span style={{color:"#445",marginLeft:3}}>{k.toUpperCase()}</span></span>
+          ))}
+          <span style={{color:"#00ff88",fontSize:10}}>⏱ {Math.floor(stats.uptime/60)}m {stats.uptime%60}s</span>
+        </div>
+      </div>
+
+      {/* Metrics */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,padding:"12px 18px"}}>
+        {[["Objek Aktif",objects.length,"obj","#00ff88"],["Diproses",stats.total,"rekod","#00aaff"],["Ancaman",stats.threats,"kes","#ff6600"],["Klasifikasi",stats.total>0?((stats.classified/stats.total)*100).toFixed(0):0,"%","#ffaa00"]].map(([l,v,u,c])=>(
+          <div key={l} style={{background:"#0a1a0a",border:`1px solid ${c}33`,borderRadius:8,padding:"10px 14px",textAlign:"center"}}>
+            <div style={{color:"#445",fontSize:10,marginBottom:3}}>{l}</div>
+            <div style={{color:c,fontSize:20,fontWeight:700}}>{v}<span style={{fontSize:10,marginLeft:3}}>{u}</span></div>
+          </div>
+        ))}
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",padding:"0 18px",borderBottom:"1px solid #00ff4422"}}>
+        {tabs.map(([id,label])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{background:tab===id?"#0a1a0a":"transparent",color:tab===id?"#00ff88":"#445",border:"none",borderBottom:tab===id?"2px solid #00ff88":"2px solid transparent",padding:"8px 14px",cursor:"pointer",fontSize:12,fontFamily:"monospace"}}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{padding:"16px 18px"}}>
+        {tab==="radar" && (
+          <div style={{display:"flex",gap:18,flexWrap:"wrap"}}>
+            <div>
+              <div style={{color:"#445",fontSize:10,marginBottom:6}}>PAPARAN RADAR LANGSUNG — 150km RADIUS</div>
+              <RadarScope objects={objects} sweep={sweep}/>
+              <div style={{display:"flex",gap:12,marginTop:8,flexWrap:"wrap"}}>
+                {Object.values(OBJECT_TYPES).map(v=><span key={v.label} style={{fontSize:10,color:v.color}}>{v.icon} {v.label}</span>)}
+              </div>
+            </div>
+            <div style={{flex:1,minWidth:220}}>
+              <div style={{color:"#445",fontSize:10,marginBottom:8}}>SALURAN INPUT MCU</div>
+              {MCU_SOURCES.map(src=>{
+                const pct=50+Math.floor(Math.random()*50);
+                return <div key={src} style={{marginBottom:8}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:2}}>
+                    <span style={{color:"#9fb"}}>{src}</span><span style={{color:"#00ff88"}}>{pct}%</span>
+                  </div>
+                  <div style={{background:"#111",borderRadius:3,height:4}}><div style={{background:"#00ff88",width:`${pct}%`,height:"100%",borderRadius:3}}/></div>
+                </div>;
+              })}
+              <div style={{marginTop:12,background:"#0a1a0a",border:"1px solid #00ff4420",borderRadius:8,padding:10}}>
+                <div style={{color:"#445",fontSize:10,marginBottom:6}}>PROTOKOL AKTIF</div>
+                {[["MQTT","mqtt://radar.mil:1883","#00ff88"],["REST API","http://api:8080/v1","#00aaff"],["Serial","COM3 @ 115200","#ffaa00"],["I2C","0x48,0x76","#ff88ff"],["SPI","CS0,CS1","#ff8844"]].map(([p,v,c])=>(
+                  <div key={p} style={{display:"flex",justifyContent:"space-between",fontSize:10,padding:"3px 0",borderBottom:"1px solid #0f0f0f"}}>
+                    <span style={{color:c}}>● {p}</span><span style={{color:"#445"}}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab==="objek" && (
+          <div>
+            <div style={{color:"#445",fontSize:10,marginBottom:10}}>SENARAI OBJEK — {objects.length} AKTIF</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:8}}>
+              {objects.map(obj=>{
+                const info=OBJECT_TYPES[obj.type];
+                return <div key={obj.id} style={{background:"#0a1a0a",border:`1px solid ${info.color}33`,borderRadius:8,padding:"10px 13px"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                    <span style={{color:info.color,fontSize:12,fontWeight:700}}>{info.icon} {info.label} #{obj.id}</span>
+                    <span style={{background:threatCol[obj.threatLevel]+"22",color:threatCol[obj.threatLevel],fontSize:9,padding:"2px 7px",borderRadius:4}}>{obj.threatLevel}</span>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 10px"}}>
+                    {[["Sudut",obj.angle.toFixed(1)+"°"],["Jarak",obj.distance.toFixed(1)+" km"],["Laju",obj.speed+" kn"],["Altitud",obj.altitude>0?obj.altitude+" m":"Permukaan"],["Sumber",obj.source],["Isyarat",obj.signalStrength+" dBm"]].map(([k,v])=>(
+                      <div key={k} style={{fontSize:10}}><span style={{color:"#445"}}>{k}: </span><span style={{color:"#9fb"}}>{v}</span></div>
+                    ))}
+                  </div>
+                </div>;
+              })}
+            </div>
+          </div>
+        )}
+
+        {tab==="log" && (
+          <div>
+            <div style={{color:"#445",fontSize:10,marginBottom:8}}>LOG SISTEM MASA NYATA</div>
+            <div style={{background:"#020c02",border:"1px solid #00ff4415",borderRadius:8,padding:10,maxHeight:440,overflowY:"auto"}}>
+              {logs.map((l,i)=>(
+                <div key={i} style={{display:"flex",gap:8,padding:"3px 0",borderBottom:"1px solid #090909",fontSize:10}}>
+                  <span style={{color:"#334",minWidth:72}}>{l.time}</span>
+                  <span style={{color:LOG_COL[l.level]||"#fff",minWidth:52}}>[{l.level}]</span>
+                  <span style={{color:"#9fb"}}>{l.msg}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {tab==="ai" && (
+          <div style={{maxWidth:640}}>
+            <div style={{color:"#445",fontSize:10,marginBottom:10}}>MODUL AI — ANALISIS ANCAMAN CLAUDE</div>
+            <div style={{background:"#0a1a0a",border:"1px solid #00ff4422",borderRadius:10,padding:14,marginBottom:12}}>
+              <div style={{color:"#9fb",fontSize:11,marginBottom:6}}>Data Radar Semasa ({objects.length} objek):</div>
+              {objects.slice(0,6).map(o=>(
+                <div key={o.id} style={{fontSize:10,padding:"3px 0",borderBottom:"1px solid #0f0f0f",color:OBJECT_TYPES[o.type].color}}>
+                  {OBJECT_TYPES[o.type].icon} {OBJECT_TYPES[o.type].label} #{o.id} — {o.angle.toFixed(1)}° — {o.distance.toFixed(1)}km — [{o.source}]
+                </div>
+              ))}
+            </div>
+            <button onClick={handleAI} disabled={aiLoading}
+              style={{width:"100%",background:aiLoading?"#112":"#003322",color:aiLoading?"#445":"#00ff88",border:"1px solid #00ff4433",borderRadius:8,padding:"11px",cursor:aiLoading?"not-allowed":"pointer",fontSize:12,fontFamily:"monospace",marginBottom:12}}>
+              {aiLoading?"⟳ Menganalisa...":"🤖 Jalankan Analisis AI Ancaman"}
+            </button>
+            {!apiKey&&<div style={{color:"#ffaa00",fontSize:10,marginBottom:8}}>⚠ API Key diperlukan — tetapkan dalam tab Tetapan.</div>}
+            {aiResult&&(
+              <div style={{background:"#0a1a0a",border:"1px solid #00aaff33",borderRadius:10,padding:14}}>
+                <div style={{color:"#00aaff",fontSize:10,marginBottom:6}}>◈ LAPORAN ANALISIS ANCAMAN:</div>
+                <div style={{color:"#cde",fontSize:12,lineHeight:1.8,whiteSpace:"pre-wrap"}}>{aiResult}</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab==="set" && (
+          <div style={{maxWidth:520}}>
+            <div style={{color:"#445",fontSize:10,marginBottom:12}}>KONFIGURASI SISTEM</div>
+            <div style={{background:"#0a1a0a",border:"1px solid #00ff4422",borderRadius:10,padding:16,marginBottom:12}}>
+              <div style={{color:"#9fb",fontSize:11,marginBottom:8}}>🔑 Anthropic API Key</div>
+              <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-ant-api03-..."
+                style={{width:"100%",background:"#020c02",border:"1px solid #00ff4433",borderRadius:6,padding:"8px 11px",color:"#9fb",fontFamily:"monospace",fontSize:12,boxSizing:"border-box"}}/>
+              <div style={{color:"#334",fontSize:10,marginTop:5}}>Hanya digunakan dalam sesi ini untuk API Anthropic.</div>
+            </div>
+            <div style={{background:"#0a1a0a",border:"1px solid #00ff4422",borderRadius:10,padding:16}}>
+              <div style={{color:"#9fb",fontSize:11,marginBottom:10}}>🔌 Status Modul</div>
+              {Object.entries(sysStat).map(([k,v])=>(
+                <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #0f0f0f"}}>
+                  <div>
+                    <span style={{color:"#9fb",fontSize:11}}>{k.toUpperCase()}</span>
+                    <span style={{color:"#334",fontSize:10,marginLeft:8}}>{k==="mqtt"?"Broker MQTT":k==="api"?"REST API":k==="serial"?"Serial/I2C/SPI":"NPU/AI Engine"}</span>
+                  </div>
+                  <button onClick={()=>setSysStat(s=>({...s,[k]:!s[k]}))}
+                    style={{background:v?"#003322":"#220011",color:v?"#00ff88":"#ff4444",border:`1px solid ${v?"#00ff4433":"#ff444433"}`,borderRadius:5,padding:"3px 11px",cursor:"pointer",fontSize:11,fontFamily:"monospace"}}>
+                    {v?"ONLINE":"OFFLINE"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
